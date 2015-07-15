@@ -1,0 +1,77 @@
+#!/bin/bash
+
+if [ -n "$DEBUG" ]; then
+  set -x
+  ruby -v; bundle -v
+fi
+
+: ${DOMAIN:=foobar}
+: ${DOCKER_IMAGE_NAME:=centos}
+
+docker_image_name="$DOMAIN/$DOCKER_IMAGE_NAME"
+docker_image="${docker_image_name}:latest"
+commit="$(git rev-parse --short=8 HEAD)"
+code=0
+
+if which boot2docker >/dev/null; then
+  chmod 600 ~/.ssh/id_boot2docker
+  boot2docker_status=$(boot2docker status)
+  test $? -ne 0 && boot2docker init; boot2docker_status=$(boot2docker status)
+  test "$boot2docker_status" != 'running' && boot2docker start
+  test x"$DOCKER_HOST" == x'' && $(boot2docker shellinit)
+else
+  [ -n "$DEBUG" ] && (echo $DOCKER_HOST; docker info)
+fi
+
+IID=$(docker images -q "$docker_image_name")
+test x"$IID" != x'' && docker rmi $IID >/dev/null 2>&1
+
+echo '==> Build a docker image'
+if [ -n "$DEBUG" ]; then
+  docker build -q -t $docker_image .
+else
+  docker build -q -t $docker_image . > docker-build.log
+fi
+
+tmpdir=$(mktemp -d /tmp/${DOMAIN}.XXXX)
+echo '==> Start parallel provisioning and testing'
+
+case `uname` in
+  Darwin) cpu_num=`sysctl hw.ncpu | awk '{print $2}'` ;;
+  *)      cpu_num=`grep processor /proc/cpuinfo | wc -l` ;;
+esac
+: ${PARALLEL:=$cpu_num}
+process_limit=$((PARALLEL + 0))
+counter=0
+
+for role in "$@"; do
+  counter=$(expr $counter + 1)
+  host_name="${role}.${DOMAIN}.docker"
+  container_name="${DOMAIN}-${commit}-${role}"
+
+  echo "    [$counter] $host_name($container_name)..."
+  (env HOST_NAME=$host_name \
+    env CONTAINER_NAME=$container_name \
+    env DOCKER_IMAGE=$docker_image \
+    bin/test_solo $role > ${tmpdir}/${role}.log 2>&1;
+    echo -n $? > ${tmpdir}/${role}.state) &
+
+  if [ $counter -ge $process_limit ]; then
+    wait
+    counter=0
+  fi
+done
+
+wait
+echo '==> Displays the resultsf parallel processing'
+
+for role in "$@"; do
+  cat ${tmpdir}/${role}.log
+  status=$(cat ${tmpdir}/${role}.state)
+  test $status -ne 0 && code=$(expr $code + 1)
+done
+
+rm -rf $tmpdir
+docker rmi ${docker_image} >/dev/null 2>&1
+
+exit $code

@@ -1,0 +1,27 @@
+image: drone/docker-in-docker:1.5.0
+
+env:
+  - BERKSHELF_PATH=/tmp/berkshelf
+  - DOCKER_HOST=tcp://10.50.100.160:2375
+  - DOMAIN=foobar
+  - PARALLEL=4
+
+cache:
+  - /tmp/bundle
+  - /tmp/berkshelf
+
+script:
+  - sudo mkdir -p /tmp/bundle ; sudo chown -R ubuntu:ubuntu /tmp/bundle
+  - sudo mkdir -p /tmp/berkshelf ; sudo chown -R ubuntu:ubuntu /tmp/berkshelf
+  - bundle install --quiet --path /tmp/bundle --without development test --binstubs
+  - bin/berks vendor vendor/cookbooks --quiet
+  - bin/test lb proxy www api db job
+
+notify:
+  slack:
+    webhook_url: 'https://hooks.slack.com/services/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    username: 'drone'
+    channel: '#foobar'
+    on_started: false
+    on_success: true
+    on_failure: true

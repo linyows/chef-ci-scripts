@@ -1,0 +1,52 @@
+#!/bin/bash
+
+if [ -n "$DEBUG" ]; then
+  set -x
+  CHEF_LOGLEVEL=info
+fi
+
+: ${DOMAIN:=foobar}
+: ${ROLE:=$1}
+: ${HOST_NAME:=${ROLE}.${DOMAIN}.docker}
+: ${CONTAINER_NAME:="$(git rev-parse --abbrev-ref HEAD)-$(git rev-parse --short=8 HEAD)-${ROLE}"}
+: ${DOCKER_IMAGE:="${DOMAIN}/xxx:latest"}
+: ${CHEF_LOGLEVEL:="error"}
+
+new_image="${DOMAIN}-${ROLE}-latest"
+failed_image="${DOMAIN}-${ROLE}-failed"
+code=0
+
+docker rmi ${failed_image} >/dev/null 2>&1
+
+cid=$(docker run -it --privileged -h ${HOST_NAME} --name=${CONTAINER_NAME} -d ${DOCKER_IMAGE})
+state=$?
+sleep 1
+
+if [ $state -eq 0 ]; then
+  echo "$HOST_NAME"
+  docker exec $CONTAINER_NAME /bin/bash -c "cd /tmp/chef; \
+    chef-client -z -l ${CHEF_LOGLEVEL} -j nodes/${HOST_NAME}.json -c .chef/client.rb"
+  state=$?
+  test $state -ne 0 && code=$state
+  sleep 1
+fi
+
+if [ $state -eq 0 ]; then
+  docker exec $CONTAINER_NAME /bin/bash -c "source /etc/profile.d/rvm.sh; \
+    cd /tmp/chef; \
+    rm -rf .bundle/config; \
+    bundle install --path vendor/bundle --quiet --binstubs --without development berks --jobs 4 && \
+    bin/rake spec:${HOST_NAME}"
+  state=$?
+  test $state -ne 0 && code=$state
+fi
+
+if [ $state -eq 0 ]; then
+  docker rmi $new_image >/dev/null 2>&1
+  docker commit $cid $new_image >/dev/null
+else
+  docker commit $cid $failed_image >/dev/null
+fi
+docker stop $cid >/dev/null && docker rm $cid >/dev/null
+
+exit $code
