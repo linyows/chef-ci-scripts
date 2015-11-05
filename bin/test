@@ -13,14 +13,21 @@ docker_image="${docker_image_name}:latest"
 commit="$(git rev-parse --short=8 HEAD)"
 code=0
 
-if which boot2docker >/dev/null; then
-  chmod 600 ~/.ssh/id_boot2docker
-  boot2docker_status=$(boot2docker status)
-  test $? -ne 0 && boot2docker init; boot2docker_status=$(boot2docker status)
-  test "$boot2docker_status" != 'running' && boot2docker start
-  test x"$DOCKER_HOST" == x'' && $(boot2docker shellinit)
+if [ `uname` = 'Darwin' ]; then
+  if which docker-machine >/dev/null; then
+    : ${DOCKER_HOST_NAME:=dev}
+    dockerhost_status=$(docker-machine status $DOCKER_HOST_NAME)
+    test $? -ne 0 && docker-machine create -d virtualbox test; dockerhost_status=$(docker-machine status $DOCKER_HOST_NAME)
+    test "$dockerhost_status" != 'Running' && docker-machine start $DOCKER_HOST_NAME
+    test x"$DOCKER_HOST" == x'' && eval "$(docker-machine env $DOCKER_HOST_NAME)"
+  else
+    echo 'Need to install the docker-machine'
+    exit
+  fi
+  cpu_num=`sysctl hw.ncpu | awk '{print $2}'`
 else
   [ -n "$DEBUG" ] && (echo $DOCKER_HOST; docker info)
+  cpu_num=`grep processor /proc/cpuinfo | wc -l`
 fi
 
 IID=$(docker images -q "$docker_image_name")
@@ -36,10 +43,6 @@ fi
 tmpdir=$(mktemp -d /tmp/${DOMAIN}.XXXX)
 echo '==> Start parallel provisioning and testing'
 
-case `uname` in
-  Darwin) cpu_num=`sysctl hw.ncpu | awk '{print $2}'` ;;
-  *)      cpu_num=`grep processor /proc/cpuinfo | wc -l` ;;
-esac
 : ${PARALLEL:=$cpu_num}
 process_limit=$((PARALLEL + 0))
 counter=0
